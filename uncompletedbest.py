@@ -1,7 +1,7 @@
 import os, json, asyncio, logging, hashlib
 from urllib.parse import urlparse
 from dotenv import load_dotenv
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, BrowserContext
 
 # ======================================================
 # Config helpers
@@ -86,7 +86,7 @@ def fingerprint_init_script():
     return "\n".join(s)
 
 # ======================================================
-# Network alignment + capture (for replay/diff)
+# Network alignment + capture
 # ======================================================
 def normalize_req(req):
     return {
@@ -96,7 +96,7 @@ def normalize_req(req):
         "postData": req.post_data or ""
     }
 
-async def align_and_capture(context, out_dir):
+async def align_and_capture(context: BrowserContext, out_dir: str):
     mkdir(out_dir)
     captured = []
 
@@ -126,14 +126,77 @@ def diff_requests(a, b):
     return {"added": added, "removed": removed}
 
 # ======================================================
-# One account runner (isolated context)
+# Advanced one-account runner
 # ======================================================
-async def run_account(p, account_id):
+async def run_account(p, account_id, headless_override=None):
     target = env("TARGET_URL")
     load_site_policy(target)
 
     base_art = os.path.join("artifacts", f"acct_{account_id}")
     mkdir(base_art)
 
-    browser = await p.chromium.launch(headless=on("HEADLESS") or on("CI"))
-    ctx = await
+    headless = headless_override if headless_override is not None else (on("HEADLESS") or on("CI"))
+
+    browser = await p.chromium.launch(headless=headless)
+    ctx = await browser.new_context(
+        viewport={"width": int(env("WINDOW_WIDTH", 1920)), "height": int(env("WINDOW_HEIGHT", 1080))},
+        user_agent=env("USER_AGENT"),
+        locale=env("LOCALE"),
+        timezone_id=env("TIMEZONE"),
+        device_scale_factor=int(env("DEVICE_SCALE_FACTOR", 1)),
+        is_mobile=on("IS_MOBILE"),
+        has_touch=on("HAS_TOUCH"),
+        storage_state=os.path.join(env("PROFILE_DIR", "profiles"), f"acct_{account_id}_state.json") if on("EXPORT_STORAGE") else None
+    )
+
+    # Inject fingerprints
+    await ctx.add_init_script(fingerprint_init_script())
+
+    # Setup network capture
+    dump_requests, captured_requests = await align_and_capture(ctx, base_art)
+
+    page = await ctx.new_page()
+    try:
+        logging.info(f"[Account {account_id}] Navigating to {target}")
+        await page.goto(target, timeout=int(env("SESSION_TIMEOUT", 3600)) * 1000)
+        if env("WAIT_FOR_SELECTOR"):
+            await page.wait_for_selector(env("WAIT_FOR_SELECTOR"), timeout=int(env("SESSION_TIMEOUT", 3600)) * 1000)
+    except Exception as e:
+        logging.error(f"[Account {account_id}] Navigation error: {e}")
+    finally:
+        # Dump captured requests
+        await dump_requests()
+        # Export storage state
+        if on("EXPORT_STORAGE"):
+            storage_path = os.path.join(base_art, "storage_state.json")
+            await ctx.storage_state(path=storage_path)
+            logging.info(f"[Account {account_id}] Storage state saved at {storage_path}")
+
+        await ctx.close()
+        await browser.close()
+        logging.info(f"[Account {account_id}] Finished")
+        return captured_requests
+
+# ======================================================
+# Advanced multi-account orchestrator with concurrency limit
+# ======================================================
+async def run_multiple_accounts(account_ids, concurrency=3):
+    semaphore = asyncio.Semaphore(concurrency)
+    results = []
+
+    async def sem_task(acc_id):
+        async with semaphore:
+            return await run_account(p, acc_id)
+
+    async with async_playwright() as p:
+        tasks = [sem_task(acc_id) for acc_id in account_ids]
+        results = await asyncio.gather(*tasks)
+    return results
+
+# ======================================================
+# Entry point
+# ======================================================
+if __name__ == "__main__":
+    account_ids = range(1, int(env("NUM_ACCOUNTS", 1)) + 1)
+    all_requests = asyncio.run(run_multiple_accounts(account_ids, concurrency=int(env("MAX_CONCURRENCY", 3))))
+    logging.info(f"All accounts finished. Captured requests: {len(all_requests)} sets")
