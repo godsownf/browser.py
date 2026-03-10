@@ -1,114 +1,161 @@
-import os, time, json, logging
+```python
+import os
+import time
+import json
+import logging
 from urllib.parse import urlparse
 from dotenv import load_dotenv
-
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
+from typing import Optional, Dict, Any
 
-# ======================================================
-# Config & Logging
-# ======================================================
+# =====================================================
+# Configuration & Logging
+# =====================================================
 load_dotenv("config.env")
 
-def env(k, d=None): return os.getenv(k, d)
-def on(k): return env(k, "0") == "1"
+def env(k: str, d: Optional[str] = None) -> Optional[str]:
+    """Retrieves an environment variable or returns a default value."""
+    return os.getenv(k, d)
+
+def on(k: str) -> bool:
+    """Checks if an environment variable is set to '1'."""
+    return env(k, "0") == "1"
 
 logging.basicConfig(
     level=logging.INFO,
     format="[%(levelname)s] %(message)s"
 )
 
-# ======================================================
-# Cookie rules (RFC‑correct)
-# ======================================================
-def _domain_match(cd, host):
-    if not cd: return False
-    cd = cd.lstrip(".").lower()
+# =====================================================
+# Cookie Handling (RFC-compliant)
+# =====================================================
+def _domain_match(cookie_domain: Optional[str], host: str) -> bool:
+    """Checks if a cookie's domain matches the target host."""
+    if not cookie_domain:
+        return False
+    cookie_domain = cookie_domain.lstrip(".").lower()
     host = host.lower()
-    return host == cd or host.endswith("." + cd)
+    return host == cookie_domain or host.endswith("." + cookie_domain)
 
-def _path_match(cp, req):
-    if not cp: return True
-    return req.startswith(cp if cp.startswith("/") else "/" + cp)
+def _path_match(cookie_path: Optional[str], request_path: str) -> bool:
+    """Checks if a cookie's path matches the requested path."""
+    if not cookie_path:
+        return True
+    return request_path.startswith(cookie_path if cookie_path.startswith("/") else "/" + cookie_path)
 
-def load_cookies_domain_safe(driver, cookie_file, target_url):
+def load_cookies_domain_safe(driver: webdriver.Chrome, cookie_file: str, target_url: str) -> None:
+    """
+    Loads cookies from a JSON file into the browser, ensuring domain and path
+    compatibility with the target URL.
+    """
     if not os.path.exists(cookie_file):
-        logging.info("No cookie file found")
+        logging.info("No cookie file found.")
         return
 
-    p = urlparse(target_url)
-    base = f"{p.scheme}://{p.hostname}/"
-    req_path = p.path or "/"
+    parsed_url = urlparse(target_url)
+    base_url = f"{parsed_url.scheme}://{parsed_url.hostname}/"
+    request_path = parsed_url.path or "/"
 
-    driver.get(base)
+    driver.get(base_url) # Navigate to base to ensure cookies are set for the domain
 
     with open(cookie_file, "r", encoding="utf-8") as f:
         cookies = json.load(f)
 
-    added = skipped = 0
+    added_count = 0
+    skipped_count = 0
 
-    for c in cookies:
-        c = dict(c)
-        c.pop("sameSite", None)
+    for cookie_data in cookies:
+        cookie: Dict[str, Any] = dict(cookie_data) # Ensure we're working with a mutable dictionary
+        cookie.pop("sameSite", None) # Remove SameSite attribute for broader compatibility
 
-        if not _domain_match(c.get("domain"), p.hostname):
-            skipped += 1; continue
-        if not _path_match(c.get("path", "/"), req_path):
-            skipped += 1; continue
-        if c.get("secure") and p.scheme != "https":
-            skipped += 1; continue
+        if not _domain_match(cookie.get("domain"), parsed_url.hostname):
+            skipped_count += 1
+            continue
+        if not _path_match(cookie.get("path", "/"), request_path):
+            skipped_count += 1
+            continue
+        if cookie.get("secure") and parsed_url.scheme != "https":
+            skipped_count += 1
+            continue
 
         try:
-            driver.add_cookie(c)
-            added += 1
-        except Exception:
-            skipped += 1
+            driver.add_cookie(cookie)
+            added_count += 1
+        except Exception as e:
+            logging.warning(f"Failed to add cookie: {cookie}. Error: {e}")
+            skipped_count += 1
 
-    driver.get(target_url)
-    driver.refresh()
-    logging.info(f"Cookies applied: {added}, skipped: {skipped}")
+    driver.get(target_url) # Navigate to the actual target URL
+    driver.refresh() # Refresh to ensure cookies are applied
+    logging.info(f"Cookies applied: {added_count}, skipped: {skipped_count}")
 
-# ======================================================
-# Browser bootstrap (boring = good)
-# ======================================================
-def start_browser():
+# =====================================================
+# Browser Bootstrap (Selenium Stealth & Configuration)
+# =====================================================
+def start_browser() -> webdriver.Chrome:
+    """Initializes and configures the Selenium Chrome browser instance."""
     opts = Options()
+
+    # Selenium Stealth configurations
     opts.add_experimental_option("excludeSwitches", ["enable-automation"])
     opts.add_experimental_option("useAutomationExtension", False)
     opts.add_argument("--disable-blink-features=AutomationControlled")
 
+    # Persistent profile option
     if on("PERSIST_PROFILE"):
-        opts.add_argument(f"--user-data-dir={env('PROFILE_DIR')}")
+        profile_dir = env('PROFILE_DIR')
+        if profile_dir:
+            opts.add_argument(f"--user-data-dir={profile_dir}")
+        else:
+            logging.warning("PERSIST_PROFILE is enabled but PROFILE_DIR is not set.")
 
-    opts.add_argument(f"user-agent={env('USER_AGENT')}")
-    opts.add_argument(f"--window-size={env('WINDOW_WIDTH')},{env('WINDOW_HEIGHT')}")
-    opts.add_argument(f"--lang={env('LANG')}")
+    # User agent and window size
+    user_agent = env('USER_AGENT', "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+    window_width = env('WINDOW_WIDTH', '1920')
+    window_height = env('WINDOW_HEIGHT', '1080')
+    language = env('LANG', 'en-US,en;q=0.9')
 
-    driver = webdriver.Chrome(
-        service=Service(ChromeDriverManager().install()),
-        options=opts
-    )
+    opts.add_argument(f"user-agent={user_agent}")
+    opts.add_argument(f"--window-size={window_width},{window_height}")
+    opts.add_argument(f"--lang={language}")
 
-    if env("TIMEZONE"):
-        driver.execute_cdp_cmd(
-            "Emulation.setTimezoneOverride",
-            {"timezoneId": env("TIMEZONE")}
+    # Initialize WebDriver
+    try:
+        driver = webdriver.Chrome(
+            service=Service(ChromeDriverManager().install()),
+            options=opts
         )
+    except Exception as e:
+        logging.error(f"Failed to initialize Chrome WebDriver: {e}")
+        raise
+
+    # Timezone override
+    if env("TIMEZONE"):
+        try:
+            driver.execute_cdp_cmd(
+                "Emulation.setTimezoneOverride",
+                {"timezoneId": env("TIMEZONE")}
+            )
+        except Exception as e:
+            logging.warning(f"Could not set timezone override: {e}")
 
     return driver
 
-# ======================================================
-# Fingerprint observation (passive)
-# ======================================================
-def inject_fp_detection(driver):
-    if not on("FP_DETECT"): return
+# =====================================================
+# Fingerprint Observation & Overrides (Passive)
+# =====================================================
+def inject_fp_detection(driver: webdriver.Chrome) -> None:
+    """Injects JavaScript to detect fingerprinting techniques."""
+    if not on("FP_DETECT"):
+        return
 
     driver.execute_script("""
     (() => {
       if (window.__fp_used) return;
-      window.__fp_used = {webgl:false,canvas:false,audio:false};
+      window.__fp_used = {webgl:false, canvas:false, audio:false};
 
       try {
         const g = WebGLRenderingContext.prototype.getParameter;
@@ -136,15 +183,16 @@ def inject_fp_detection(driver):
     })();
     """)
 
-def apply_fp_overrides(driver, used):
+def apply_fp_overrides(driver: webdriver.Chrome, used: Dict[str, bool]) -> None:
+    """Applies JavaScript overrides to mask fingerprinting data."""
     if used.get("webgl") and on("FP_WEBGL"):
         driver.execute_script(f"""
         const g = WebGLRenderingContext.prototype.getParameter;
-        WebGLRenderingContext.prototype.getParameter = function(p){
-          if(p===37445) return "{env('WEBGL_VENDOR')}";
-          if(p===37446) return "{env('WEBGL_RENDERER')}";
+        WebGLRenderingContext.prototype.getParameter = function(p){{
+          if(p===37445) return "{env('WEBGL_VENDOR', 'NVIDIA')}";
+          if(p===37446) return "{env('WEBGL_RENDERER', 'NVIDIA GeForce RTX 3080')}";
           return g.call(this,p);
-        };
+        }};
         """)
 
     if used.get("canvas") and on("FP_CANVAS"):
@@ -166,42 +214,66 @@ def apply_fp_overrides(driver, used):
         };
         """)
 
-# ======================================================
-# Login flow (cookie‑first, token optional)
-# ======================================================
-def browser_login():
+# =====================================================
+# Login Flow (Cookie-first, Token Optional)
+# =====================================================
+def browser_login() -> None:
+    """
+    Handles the browser initialization, cookie loading, and optional token login.
+    Includes fingerprint detection and overrides.
+    """
     driver = start_browser()
     url = env("TARGET_URL")
+    if not url:
+        logging.error("TARGET_URL environment variable not set.")
+        driver.quit()
+        return
+
     driver.get(url)
-    time.sleep(2)
+    time.sleep(2) # Initial page load wait
 
-    load_cookies_domain_safe(driver, env("COOKIE_FILE"), url)
+    # Load cookies if a cookie file is specified
+    cookie_file = env("COOKIE_FILE")
+    if cookie_file:
+        load_cookies_domain_safe(driver, cookie_file, url)
+    else:
+        logging.info("COOKIE_FILE not set, skipping cookie loading.")
 
-    if env("LOGIN_TOKEN"):
+    # Apply login token if provided
+    login_token = env("LOGIN_TOKEN")
+    if login_token:
         driver.execute_script(f"""
         (() => {{
           setTimeout(() => {{
-            localStorage.token = "{env('LOGIN_TOKEN')}";
+            localStorage.token = "{login_token}";
             location.reload();
           }}, 500);
         }})();
         """)
+        time.sleep(3) # Allow time for token to be applied and page to reload
 
+    # Fingerprint detection and overrides
     inject_fp_detection(driver)
-    time.sleep(2)
+    time.sleep(2) # Give JS time to inject and run
 
     used = driver.execute_script("return window.__fp_used || {}")
-    logging.info(f"Fingerprint surfaces used: {used}")
+    logging.info(f"Fingerprint surfaces detected as used: {used}")
 
     apply_fp_overrides(driver, used)
 
-    logging.info("Session stabilized")
+    logging.info("Session stabilized and browser ready.")
 
-    while True:
-        time.sleep(60)
+    # Keep the browser open
+    try:
+        while True:
+            time.sleep(60)
+    except KeyboardInterrupt:
+        logging.info("Script interrupted by user. Closing browser.")
+    finally:
+        driver.quit()
 
-# ======================================================
-# Entry
-# ======================================================
+# =====================================================
+# Entry Point
+# =====================================================
 if __name__ == "__main__":
     browser_login()
