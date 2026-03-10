@@ -8,19 +8,35 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
-from typing import Optional, Dict, Any
 
 # =====================================================
 # Configuration & Logging
 # =====================================================
 load_dotenv("config.env")
 
-def env(k: str, d: Optional[str] = None) -> Optional[str]:
-    """Retrieves an environment variable or returns a default value."""
+def env(k: str, d: str | None = None) -> str:
+    """
+    Retrieves an environment variable or returns a default value.
+
+    Args:
+        k: The name of the environment variable.
+        d: The default value to return if the variable is not set.
+
+    Returns:
+        The value of the environment variable or the default value.
+    """
     return os.getenv(k, d)
 
 def on(k: str) -> bool:
-    """Checks if an environment variable is set to '1'."""
+    """
+    Checks if an environment variable is set to '1'.
+
+    Args:
+        k: The name of the environment variable.
+
+    Returns:
+        True if the environment variable is set to '1', False otherwise.
+    """
     return env(k, "0") == "1"
 
 logging.basicConfig(
@@ -31,16 +47,34 @@ logging.basicConfig(
 # =====================================================
 # Cookie Handling (RFC-compliant)
 # =====================================================
-def _domain_match(cookie_domain: Optional[str], host: str) -> bool:
-    """Checks if a cookie's domain matches the target host."""
+def _domain_match(cookie_domain: str | None, host: str) -> bool:
+    """
+    Checks if a cookie's domain matches the target host.
+
+    Args:
+        cookie_domain: The domain of the cookie.
+        host: The host of the target URL.
+
+    Returns:
+        True if the cookie domain matches the host, False otherwise.
+    """
     if not cookie_domain:
         return False
     cookie_domain = cookie_domain.lstrip(".").lower()
     host = host.lower()
     return host == cookie_domain or host.endswith("." + cookie_domain)
 
-def _path_match(cookie_path: Optional[str], request_path: str) -> bool:
-    """Checks if a cookie's path matches the requested path."""
+def _path_match(cookie_path: str | None, request_path: str) -> bool:
+    """
+    Checks if a cookie's path matches the requested path.
+
+    Args:
+        cookie_path: The path of the cookie.
+        request_path: The path of the requested URL.
+
+    Returns:
+        True if the cookie path matches the request path, False otherwise.
+    """
     if not cookie_path:
         return True
     return request_path.startswith(cookie_path if cookie_path.startswith("/") else "/" + cookie_path)
@@ -49,6 +83,11 @@ def load_cookies_domain_safe(driver: webdriver.Chrome, cookie_file: str, target_
     """
     Loads cookies from a JSON file into the browser, ensuring domain and path
     compatibility with the target URL.
+
+    Args:
+        driver: The Selenium WebDriver instance.
+        cookie_file: The path to the JSON file containing cookies.
+        target_url: The URL to which the cookies should be applied.
     """
     if not os.path.exists(cookie_file):
         logging.info("No cookie file found.")
@@ -60,14 +99,21 @@ def load_cookies_domain_safe(driver: webdriver.Chrome, cookie_file: str, target_
 
     driver.get(base_url) # Navigate to base to ensure cookies are set for the domain
 
-    with open(cookie_file, "r", encoding="utf-8") as f:
-        cookies = json.load(f)
+    try:
+        with open(cookie_file, "r", encoding="utf-8") as f:
+            cookies = json.load(f)
+    except json.JSONDecodeError:
+        logging.error(f"Failed to decode JSON from cookie file: {cookie_file}")
+        return
+    except Exception as e:
+        logging.error(f"Error reading cookie file {cookie_file}: {e}")
+        return
 
     added_count = 0
     skipped_count = 0
 
     for cookie_data in cookies:
-        cookie: Dict[str, Any] = dict(cookie_data) # Ensure we're working with a mutable dictionary
+        cookie = dict(cookie_data) # Ensure we're working with a mutable dictionary
         cookie.pop("sameSite", None) # Remove SameSite attribute for broader compatibility
 
         if not _domain_match(cookie.get("domain"), parsed_url.hostname):
@@ -87,15 +133,24 @@ def load_cookies_domain_safe(driver: webdriver.Chrome, cookie_file: str, target_
             logging.warning(f"Failed to add cookie: {cookie}. Error: {e}")
             skipped_count += 1
 
-    driver.get(target_url) # Navigate to the actual target URL
-    driver.refresh() # Refresh to ensure cookies are applied
+    driver.get(target_url)
+    driver.refresh()
     logging.info(f"Cookies applied: {added_count}, skipped: {skipped_count}")
 
 # =====================================================
 # Browser Bootstrap (Selenium Stealth & Configuration)
 # =====================================================
 def start_browser() -> webdriver.Chrome:
-    """Initializes and configures the Selenium Chrome browser instance."""
+    """
+    Initializes and configures the Selenium Chrome browser instance with stealth
+    options and persistent profile support.
+
+    Returns:
+        A configured Selenium WebDriver instance.
+
+    Raises:
+        Exception: If the Chrome WebDriver fails to initialize.
+    """
     opts = Options()
 
     # Selenium Stealth configurations
@@ -111,8 +166,8 @@ def start_browser() -> webdriver.Chrome:
         else:
             logging.warning("PERSIST_PROFILE is enabled but PROFILE_DIR is not set.")
 
-    # User agent and window size
-    user_agent = env('USER_AGENT', "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+    # Browser Identity and Window Settings
+    user_agent = env('USER_AGENT', "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     window_width = env('WINDOW_WIDTH', '1920')
     window_height = env('WINDOW_HEIGHT', '1080')
     language = env('LANG', 'en-US,en;q=0.9')
@@ -147,7 +202,13 @@ def start_browser() -> webdriver.Chrome:
 # Fingerprint Observation & Overrides (Passive)
 # =====================================================
 def inject_fp_detection(driver: webdriver.Chrome) -> None:
-    """Injects JavaScript to detect fingerprinting techniques."""
+    """
+    Injects JavaScript into the page to detect fingerprinting techniques.
+    This script monitors WebGL, Canvas, and AudioContext for usage.
+
+    Args:
+        driver: The Selenium WebDriver instance.
+    """
     if not on("FP_DETECT"):
         return
 
@@ -182,8 +243,14 @@ def inject_fp_detection(driver: webdriver.Chrome) -> None:
     })();
     """)
 
-def apply_fp_overrides(driver: webdriver.Chrome, used: Dict[str, bool]) -> None:
-    """Applies JavaScript overrides to mask fingerprinting data."""
+def apply_fp_overrides(driver: webdriver.Chrome, used: dict[str, bool]) -> None:
+    """
+    Applies JavaScript overrides to mask fingerprinting data if detected and enabled.
+
+    Args:
+        driver: The Selenium WebDriver instance.
+        used: A dictionary indicating which fingerprinting surfaces were detected as used.
+    """
     if used.get("webgl") and on("FP_WEBGL"):
         driver.execute_script(f"""
         const g = WebGLRenderingContext.prototype.getParameter;
@@ -220,6 +287,7 @@ def browser_login() -> None:
     """
     Handles the browser initialization, cookie loading, and optional token login.
     Includes fingerprint detection and overrides.
+    Maintains the browser session indefinitely.
     """
     driver = start_browser()
     url = env("TARGET_URL")
@@ -260,16 +328,11 @@ def browser_login() -> None:
 
     apply_fp_overrides(driver, used)
 
-    logging.info("Session stabilized and browser ready.")
+    logging.info("Browser session stabilized and ready.")
 
     # Keep the browser open
-    try:
-        while True:
-            time.sleep(60)
-    except KeyboardInterrupt:
-        logging.info("Script interrupted by user. Closing browser.")
-    finally:
-        driver.quit()
+    while True:
+        time.sleep(60)
 
 # =====================================================
 # Entry Point
