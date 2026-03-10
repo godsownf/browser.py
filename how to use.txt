@@ -1,0 +1,71 @@
+```text
+# howtouse.txt
+
+This script automates browser interactions using Selenium, focusing on robust login and fingerprinting prevention.
+
+## Prerequisites
+
+1.  **Python Installation:** Ensure you have Python 3.7+ installed.
+2.  **Required Libraries:** Install the necessary Python packages:
+    ```bash
+    pip install selenium python-dotenv webdriver-manager
+    ```
+3.  **Google Chrome:** You need Google Chrome installed on your system. The script will automatically download the correct ChromeDriver.
+
+## Configuration (`config.env`)
+
+Create a file named `config.env` in the same directory as the Python script and configure the following settings:
+
+*   **`TARGET_URL`**: The main URL the script will navigate to.
+*   **`COOKIE_FILE`** (Optional): Path to a JSON file containing cookies. If provided, these cookies will be loaded before proceeding. The JSON format should be a list of cookie dictionaries, compatible with Selenium's `add_cookie` method.
+    *   Example `cookies.json`:
+        ```json
+        [
+          {
+            "name": "sessionid",
+            "value": "your_session_id_here",
+            "domain": ".example.com",
+            "path": "/",
+            "secure": true,
+            "httpOnly": true,
+            "expiry": 1678886400
+          }
+        ]
+        ```
+*   **`LOGIN_TOKEN`** (Optional): A JWT token to be set in `localStorage` for authentication. This is an alternative or supplementary login method.
+*   **`PERSIST_PROFILE`**: Set to `1` to enable using a persistent Chrome user profile. This is useful for maintaining browser state (like logins, extensions) across script runs.
+*   **`PROFILE_DIR`**: If `PERSIST_PROFILE` is `1`, specify the absolute path to your Chrome user data directory.
+    *   **Windows:** `C:\Users\<YourUsername>\AppData\Local\Google\Chrome\User Data`
+    *   **macOS:** `/Users/<YourUsername>/Library/Application Support/Google/Chrome/`
+    *   **Linux:** `/home/<YourUsername>/.config/google-chrome/`
+*   **`USER_AGENT`**: A custom User-Agent string for the browser.
+*   **`WINDOW_WIDTH`**, **`WINDOW_HEIGHT`**: The desired dimensions for the browser window.
+*   **`LANG`**: The language preference for the browser.
+*   **`TIMEZONE`** (Optional): Overrides the browser's default timezone using a timezone ID (e.g., `America/New_York`).
+*   **`FP_DETECT`**: Set to `1` to enable JavaScript injection that detects if fingerprinting techniques (WebGL, Canvas, Audio) are being used by the website.
+*   **`FP_WEBGL`**, **`FP_CANVAS`**, **`FP_AUDIO`**: If `FP_DETECT` is enabled and a specific fingerprinting surface is detected, setting the corresponding `FP_*` option to `1` will attempt to override it with predefined values.
+*   **`WEBGL_VENDOR`**, **`WEBGL_RENDERER`**: Custom values to use for WebGL overrides if `FP_WEBGL` is enabled.
+
+## Running the Script
+
+1.  Save the Python code as `browser_automation.py`.
+2.  Create the `config.env` file in the same directory and populate it with your desired settings.
+3.  Run the script from your terminal:
+    ```bash
+    python browser_automation.py
+    ```
+
+The script will:
+1.  Initialize a Chrome browser instance with stealth configurations.
+2.  Navigate to the `TARGET_URL`.
+3.  Load cookies from `COOKIE_FILE` if specified.
+4.  Apply `LOGIN_TOKEN` to `localStorage` if specified.
+5.  Inject JavaScript for fingerprint detection and apply overrides if configured.
+6.  The browser window will remain open, and you can observe its behavior. Press `Ctrl+C` in the terminal to gracefully close the browser.
+
+## Notes
+
+*   **Error Handling:** The script includes basic error logging for WebDriver initialization and cookie loading.
+*   **Fingerprinting:** Fingerprint overrides are passive and might not be foolproof against advanced detection methods.
+*   **`webdriver-manager`**: This library automatically downloads and manages the correct ChromeDriver version for your installed Chrome browser.
+```
